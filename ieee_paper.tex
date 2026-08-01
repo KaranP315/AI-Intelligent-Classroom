@@ -1,0 +1,441 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Double-Gated Time-Window Aggregation: A Multimodal AI Approach to Classroom Attention Scoring}
+
+\author{\IEEEauthorblockN{1\textsuperscript{st} B.V. Tejas}
+\IEEEauthorblockA{\textit{Dept. of Computer Science and Engineering} \\
+\textit{PES University}\\
+Bengaluru, India \\
+bvtejas@pes.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+Measuring real student engagement in a classroom has always been tricky. Most systems built so far rely on just one source of data and end up with blind spots. Camera-based trackers watch body posture but have no idea whether the student is actually contributing to the discussion. Microphone-based trackers count speech activity but can be easily fooled by students who talk loudly about completely irrelevant things. This paper presents a working multimodal system that tackles both of these weaknesses at once. We built a dual-stream pipeline that fuses computer vision with natural language processing inside discrete one-minute time windows. The visual stream uses Google MediaPipe Pose to extract five 3D skeletal landmarks and classify physical posture through pure geometric rules. The audio stream chains OpenAI Whisper transcription, a Semi-Supervised Contrastive (SSCon) dialogue act classifier backed by DialoGPT-medium and XGBoost, and a Sentence-Transformer semantic relevance gate. Only speech that clears both the acoustic reasoning check and a cosine similarity threshold of 0.35 against the day's lesson plan earns credit. The two percentage scores are blended using a 60/40 weighted formula to produce a single engagement metric per student. We also layer in a YOLOv8n object detection pass that catches cell phones and drinking bottles in the frame, overriding the pose classifier when needed. The result is a system that reliably tells apart a genuinely focused student from someone who is just going through the motions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Multimodal Learning Analytics, Pose Estimation, Dialogue Act Classification, Contrastive Learning, Attention Scoring
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Anyone who has taught a class of thirty or more students knows the frustration: you simply cannot watch everyone at once. There is always someone in the back row who looks like they are paying attention but has mentally checked out, and someone else who seems restless but is actually deeply engaged in the material. The challenge of accurately measuring classroom engagement has motivated a growing body of research in educational technology, but the solutions proposed so far tend to fall into one of two camps, each with a clear weakness.
+
+The first camp relies on computer vision. Cameras track head pose, eye gaze, or full-body posture and try to infer whether a student is focused \cite{b1}. These systems work reasonably well for catching blatant distractions---someone turned completely around in their seat, for example---but they miss everything that happens at the verbal level. A student can sit perfectly upright and stare at the board for an entire lecture without ever opening their mouth or engaging with the material. A camera would score that student as highly attentive.
+
+The second camp relies on audio analysis. Microphones pick up who is talking and how often, and the system rewards students who participate vocally \cite{b5}. The problem here is the opposite: these systems have no way to tell whether the speech is relevant. A student could spend the entire period asking their neighbor about lunch plans and still rack up a perfect participation score simply because they were talking.
+
+What is needed is a system that looks at both signals at the same time and cross-checks them against each other. That is exactly what we built. Our pipeline runs two independent processing streams---one watching through a camera, one listening through a microphone---and fuses their outputs inside synchronized one-minute time windows. Crucially, the audio stream does not just count words. It passes every utterance through a double gate: first an acoustic classifier decides if the student is reasoning, and then a semantic similarity check confirms the speech actually relates to the lesson being taught that day. This two-gate design is what prevents students from gaming the system.
+
+The contributions of this paper are as follows:
+\begin{itemize}
+    \item A geometry-based posture classification approach using five MediaPipe Pose 3D landmarks that replaces computationally expensive CNN classifiers and correctly handles head turns, a known failure mode of image-level classification.
+    \item A double-gated NLP pipeline that chains SSCon dialogue act classification with Sentence-Transformer cosine similarity scoring against the lesson text to separate genuine academic reasoning from off-topic speech.
+    \item A working implementation of a fused time-window aggregation system with YOLO-based object detection overrides for real-time cell phone and beverage detection.
+    \item A proportional behavioral feedback generator that produces per-student teacher dashboard summaries based on dialogue act distributions.
+\end{itemize}
+
+\section{Related Work}
+
+Automated classroom observation has been explored from multiple angles. Dewan et al. \cite{b7} provided a survey of engagement detection systems, most of which rely on facial action units or eye tracking and operate only on the visual modality. Zaletelj and Ko\v{s}ir \cite{b8} used body pose features from OpenPose combined with gaze estimation for attention prediction in classroom videos, but their approach did not incorporate any audio or speech content analysis.
+
+On the audio side, Suresh et al. \cite{b4} proposed the TalkMoves framework, which classified teacher and student utterances into predefined dialogue acts using fine-tuned language models. Their work demonstrated that dialogue acts like \emph{Providing Evidence} and \emph{Making a Claim} can be reliably identified from classroom transcripts, but they did not fuse this information with any visual modality.
+
+Lugaresi et al. \cite{b2} introduced MediaPipe, a framework for building multimodal perception pipelines, which has since been widely adopted for pose estimation tasks. The Pose Landmarker model provides 33 3D landmarks per detected person and runs efficiently on mobile and edge devices.
+
+Reimers and Gurevych \cite{b3} introduced Sentence-BERT, demonstrating that Siamese BERT architectures produce semantically meaningful sentence embeddings suitable for cosine similarity comparisons. The \texttt{all-MiniLM-L6-v2} variant we use maps input sentences to a 384-dimensional dense vector space and has been shown to work well for semantic textual similarity tasks.
+
+The SSCon (Semi-Supervised Contrastive) learning paradigm \cite{b4} iteratively trains a contrastive bi-encoder alongside an XGBoost classifier, using high-confidence pseudo-labels to bootstrap from limited labeled data. This approach is particularly well-suited to classroom dialogue classification, where labeled datasets are scarce and domain-specific.
+
+To our knowledge, no prior system combines geometric pose classification, dialogue act recognition, and semantic relevance gating within a unified time-window aggregation framework.
+
+\section{Proposed System Architecture}
+
+Our system is split into two parallel processing streams orchestrated by a central session runner. Both streams run concurrently: the computer vision pipeline operates as a separate subprocess, while the audio pipeline runs in a daemon thread within the main process. This separation is necessary because the deep learning frameworks used by each stream (TensorFlow/YOLO for vision, PyTorch for audio) can conflict when loaded into the same process. A shared threading event coordinates shutdown, and a three-second startup delay ensures the camera initializes before the audio models begin loading. At session end, both streams are terminated and a report generation module parses the output logs from both pipelines.
+
+\subsection{Stream 1: Computer Vision Pipeline}
+
+The visual stream is responsible for identifying students by face and classifying their physical behavior every few seconds. It consists of three stages.
+
+\subsubsection{Person Detection with YOLOv8}
+Each captured frame is processed by a YOLOv8-nano \cite{b1} object detector (6.5~MB model). The detector identifies bounding boxes for every person in the frame. Importantly, it also flags the presence of two distraction-related object classes: \texttt{cell phone} and \texttt{bottle/cup}. These detections are used later as override signals.
+
+\subsubsection{Pose-Based Behavior Classification}
+For each detected person, the bounding box region is cropped from the frame, converted from BGR to RGB color space, and passed to a MediaPipe Pose Landmarker Lite model \cite{b2} (5.8~MB). The model returns 33 three-dimensional landmarks, of which we use exactly five:
+
+\begin{table}[htbp]
+\caption{MediaPipe Landmarks Used for Posture Classification}
+\begin{center}
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Index} & \textbf{Landmark} & \textbf{Role} \\
+\hline
+0 & Nose & Head position reference \\
+7 & Left Ear & Horizontal head turn indicator \\
+8 & Right Ear & Horizontal head turn indicator \\
+11 & Left Shoulder & Vertical reference baseline \\
+12 & Right Shoulder & Vertical reference baseline \\
+\hline
+\end{tabular}
+\label{tab:landmarks}
+\end{center}
+\end{table}
+
+From these five landmarks, three geometric metrics are computed. The horizontal distances from the nose to each ear are calculated as $d_L = |x_{\text{nose}} - x_{\text{left\_ear}}|$ and $d_R = |x_{\text{nose}} - x_{\text{right\_ear}}|$. The ear visibility scores are checked against a presence threshold of 0.3. Finally, the vertical nose-to-shoulder drop is computed as:
+\begin{equation}
+\Delta_y = \frac{y_{\text{left\_shoulder}} + y_{\text{right\_shoulder}}}{2} - y_{\text{nose}}
+\label{eq:drop}
+\end{equation}
+
+The classification rules are applied in strict priority order:
+
+\begin{table}[htbp]
+\caption{Geometric Classification Rules (Priority Order)}
+\begin{center}
+\begin{tabular}{|c|p{4.2cm}|c|}
+\hline
+\textbf{Rule} & \textbf{Condition} & \textbf{Label} \\
+\hline
+R1a & Either ear presence $< 0.3$ & Distracted \\
+\hline
+R1b & $\frac{\max(d_L, d_R)}{\min(d_L, d_R)} > 3.0$ & Distracted \\
+\hline
+R2 & $\Delta_y < 0.15$ & Writing \\
+\hline
+R3 & All above pass (upright) & Listening \\
+\hline
+R4 & No landmarks detected & Distracted \\
+\hline
+\end{tabular}
+\label{tab:rules}
+\end{center}
+\end{table}
+
+Rule R1 catches sharp head turns where the nose is much closer to one ear than the other, or where one ear has disappeared from view entirely. Rule R2 catches students looking down at a desk or phone on the table. Rule R3 is the default for an upright, centered posture.
+
+\subsubsection{YOLO Object Overrides}
+After the pose-based classification, the system checks whether YOLO detected a cell phone or drinking vessel anywhere in the frame. If a phone is present and the student was classified as \texttt{listen} or \texttt{write}, the label is forcibly overridden to \texttt{distracted} with 95\% confidence. If a bottle or cup is detected instead, the label becomes \texttt{drink}. Phone detection takes priority over beverage detection.
+
+\subsubsection{Face Recognition and Logging}
+Each cropped person image is also processed by a face recognition module that computes 128-dimensional face encodings and matches them against pre-registered student photographs using Euclidean face distance. The resulting CSV log records the timestamp, student name, behavior label, and classification confidence for every frame.
+
+\subsection{Stream 2: Audio and NLP Pipeline}
+
+The audio stream captures speech, transcribes it, classifies the dialogue act, and checks whether the content relates to the lesson.
+
+\subsubsection{Speech Capture and Transcription}
+Audio is recorded in 10-second chunks at 16,000~Hz (160,000 samples per chunk) using the \texttt{sounddevice} library. Each chunk is saved as a temporary WAV file and transcribed by OpenAI Whisper (base model, 74M parameters) \cite{b5}. The transcription call explicitly sets \texttt{condition\_on\_previous\_text=False} to prevent the model from hallucinating repetitive text during periods of silence or background noise. Utterances shorter than three characters are discarded.
+
+\subsubsection{Speaker Attribution}
+Since the microphone captures ambient classroom audio without speaker separation, the system attributes each utterance to the student most recently detected by the camera. This is done by reading the last row of the CV log file and extracting the person name.
+
+\subsubsection{SSCon Dialogue Act Classification}
+Each valid transcript is classified into one of four dialogue acts using a Semi-Supervised Contrastive (SSCon) pipeline:
+
+\begin{table}[htbp]
+\caption{SSCon Dialogue Act Categories}
+\begin{center}
+\begin{tabular}{|c|l|c|}
+\hline
+\textbf{Index} & \textbf{Dialogue Act} & \textbf{Reasoning?} \\
+\hline
+0 & Relating to another student & Yes \\
+1 & Asking for more information & No \\
+2 & Making a claim & Yes \\
+3 & Providing evidence & Yes \\
+\hline
+\end{tabular}
+\label{tab:acts}
+\end{center}
+\end{table}
+
+The classification pipeline works as follows. First, the conversation history (up to 10 prior turns) is concatenated with EOS tokens and processed by DialoGPT-medium to extract a 1024-dimensional contextual hidden-state vector from layer 12 of the transformer. Separately, the current utterance is embedded by a Sentence-Transformer (\texttt{all-MiniLM-L6-v2}) into a 384-dimensional vector. These two representations are concatenated into a 1408-dimensional feature vector, projected to 384 dimensions by a trained contrastive bi-encoder, and finally classified by an XGBoost model.
+
+The bi-encoder architecture consists of six layers: an input linear projection from 1408 to 720 dimensions, followed by four hidden layers with batch normalization, ReLU activation, and 20\% dropout, progressively narrowing from 720 to 640 to 560 to 384 dimensions. Training uses binary cross-entropy on cosine similarity labels with Adam optimization at a learning rate of $7 \times 10^{-4}$, batch size of 512, and a distillation probability threshold of 0.85.
+
+\subsubsection{Semantic Relevance Gate}
+Even after the dialogue act is determined, the system requires a second check. The transcript and the teacher's lesson text for the day are both encoded by the Sentence-Transformer into 384-dimensional dense vectors, and their cosine similarity is computed:
+\begin{equation}
+\text{sim}(\mathbf{v}_{stu}, \mathbf{v}_{les}) = \frac{\mathbf{v}_{stu} \cdot \mathbf{v}_{les}}{\|\mathbf{v}_{stu}\| \, \|\mathbf{v}_{les}\|}
+\label{eq:cosine}
+\end{equation}
+
+If the similarity meets or exceeds the threshold $\tau = 0.35$, the utterance is considered on-topic. This threshold was set deliberately low because classroom speech is informal and will rarely match the lesson text verbatim.
+
+\section{Mathematical Model}
+
+\subsection{CV Stream: Majority Voting Aggregation}
+Raw frame-level behavior labels are aggregated into one-minute buckets. For a bucket $t$ containing $N$ consecutive frame labels $b_1, b_2, \ldots, b_N$, the dominant behavior is determined by majority vote:
+\begin{equation}
+B_t = \text{mode}(b_1, b_2, \ldots, b_N)
+\label{eq:mode}
+\end{equation}
+
+The partial last bucket (if fewer than 60 frames remain) is still counted. Each dominant behavior maps to a point value according to:
+
+\begin{table}[htbp]
+\caption{CV Behavior Point Mapping}
+\begin{center}
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Behavior} & \textbf{Points} & \textbf{Rationale} \\
+\hline
+Writing & 5 & Actively taking notes \\
+Listening & 4 & Attentive to board/teacher \\
+Drinking & 1 & Mild, brief distraction \\
+Distracted & 0 & Completely disengaged \\
+\hline
+\end{tabular}
+\label{tab:cv_points}
+\end{center}
+\end{table}
+
+The maximum possible per bucket is 5, giving $P_{CV,\text{max}} = 5K$ for $K$ buckets.
+
+\subsection{Audio Stream: Tiered Double-Gate Scoring}
+Audio events are also grouped into one-minute buckets (aligned with the CV session length). Within each bucket, each utterance is scored through the double gate:
+
+\begin{table}[htbp]
+\caption{Tiered Audio Scoring Rules}
+\begin{center}
+\begin{tabular}{|c|p{3.8cm}|c|}
+\hline
+\textbf{Tier} & \textbf{Condition} & \textbf{Points} \\
+\hline
+1 & Reasoning act AND sim $\geq 0.35$ & 5 \\
+\hline
+2 & Not reasoning, but sim $\geq 0.35$ & 3 \\
+\hline
+3 & Short acknowledgment only (e.g., ``yes'', ``ok'', ``hmm'') & 1 \\
+\hline
+0 & Off-topic or silence & 0 \\
+\hline
+\end{tabular}
+\label{tab:audio_tiers}
+\end{center}
+\end{table}
+
+Each bucket takes the \emph{highest} tier score among all utterances in that minute. If the highest score reaches 5 (Tier 1), scoring for that bucket terminates early. Silent buckets receive zero points. The acknowledgment set includes common classroom responses: \{yes, no, yeah, yep, nope, ok, okay, sure, right, correct, true, false, hmm, ya, na, haan, nahi\}.
+
+\subsection{Weighted Score Fusion}
+Both streams are converted to percentages:
+\begin{equation}
+C_{pct} = \frac{P_{CV,\text{earned}}}{P_{CV,\text{max}}} \times 100, \quad
+A_{pct} = \frac{P_{Audio,\text{earned}}}{P_{Audio,\text{max}}} \times 100
+\label{eq:pct}
+\end{equation}
+
+The final engagement score $E$ is a weighted blend:
+\begin{equation}
+E = 0.60 \cdot C_{pct} + 0.40 \cdot A_{pct}
+\label{eq:blend}
+\end{equation}
+
+The 60/40 weighting reflects the fact that visual data is continuous (captured every few seconds) while audio events are sparse and intermittent. If either stream has no data (e.g., the microphone was not available), its weight transfers entirely to the other stream.
+
+\section{Behavioral Feedback Generator}
+
+Beyond the numeric score, the system generates a natural-language feedback string for the teacher's dashboard. It counts how many utterances fell into each audio tier and applies proportional threshold rules:
+
+\begin{table}[htbp]
+\caption{Feedback Generation Threshold Rules}
+\begin{center}
+\begin{tabular}{|c|p{3.6cm}|p{2.8cm}|}
+\hline
+\textbf{Rule} & \textbf{Trigger Condition} & \textbf{Feedback Label} \\
+\hline
+1 & Zero total speaking events & Silent Observer \\
+\hline
+2 & Questioning $>$ 4, or $>$40\% of speech & Highly Inquisitive \\
+\hline
+3 & Reasoning $>$ 3, or $>$40\% of speech & Strong Analytical Skills \\
+\hline
+4 & Acknowledgments $>$ reasoning + questioning & Passive Participant \\
+\hline
+5 & Off-topic $>$ 2, or $>$50\% of speech & Distracted Speaker \\
+\hline
+\end{tabular}
+\label{tab:feedback}
+\end{center}
+\end{table}
+
+The thresholds use both absolute counts (for long sessions) and proportional checks (for short demos with only a few utterances). Multiple rules can fire simultaneously, and their labels are concatenated. If no specific rule triggers, the default label is ``Standard Participant.''
+
+\section{Experimental Evaluation}
+
+\subsection{Demonstration Setup}
+The system was tested in a controlled classroom setting with four enrolled students (Karan, Saurav, Krishna, and Tejas) using a MacBook Pro with an Apple M3 Pro processor. Face encodings were pre-registered from a single photograph per student stored in the \texttt{face\_data/} directory. The lesson topic for all test sessions was Newtonian gravity, with the reference text covering gravitational force, mass dependence, and the inverse-square law (494 characters stored in \texttt{subject.txt}).
+
+\subsection{Double-Gate Effectiveness}
+Table~\ref{tab:gate_demo} demonstrates the core value proposition of the double-gated audio pipeline. Two students speak during the same session, but their speech has very different academic content.
+
+\begin{table}[htbp]
+\caption{Double-Gate Discrimination: On-Topic vs. Off-Topic Speech}
+\begin{center}
+\begin{tabular}{|p{1.4cm}|p{2.4cm}|c|c|c|}
+\hline
+\textbf{Student} & \textbf{Utterance} & \textbf{SSCon Act} & \textbf{Cos. Sim} & \textbf{Pts} \\
+\hline
+Tejas & ``Gravity is important because it pulls objects...'' & Providing evidence & 0.62 & 5 \\
+\hline
+Krishna & ``When are we going to go for lunch?'' & Asking for info & 0.12 & 0 \\
+\hline
+Krishna & ``When is the break?'' & Asking for info & 0.09 & 0 \\
+\hline
+\end{tabular}
+\label{tab:gate_demo}
+\end{center}
+\end{table}
+
+Tejas's statement about gravity passes both gates (SSCon classifies it as \emph{Providing evidence}, and the cosine similarity of 0.62 clears the 0.35 threshold), earning a full 5 points. Krishna's two questions about lunch and breaks fail the semantic gate entirely, earning zero points despite being classified as speech acts. A system without the semantic gate would have awarded Krishna participation credit simply for talking.
+
+\subsection{Fused Score Comparison}
+Table~\ref{tab:fused} shows the final fused scores for two students from the same session, illustrating how the multimodal blend works in practice.
+
+\begin{table}[htbp]
+\caption{Fused Multimodal Engagement Scores}
+\begin{center}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Student} & \textbf{CV (max 5)} & \textbf{Audio (max 5)} & \textbf{Blend} & \textbf{Feedback} \\
+\hline
+Tejas & 4/5 (80\%) & 5/5 (100\%) & 88.0 & Analytical \\
+\hline
+Krishna & 4/5 (80\%) & 0/5 (0\%) & 48.0 & Distracted \\
+\hline
+\end{tabular}
+\label{tab:fused}
+\end{center}
+\end{table}
+
+Both students had identical CV scores of 80\%, reflecting similar physical posture during the session. The difference in their final engagement scores comes entirely from the audio stream: Tejas earned 100\% on audio through on-topic reasoning, while Krishna earned 0\% because both of his utterances were off-topic. The 60/40 weighted blend correctly produces a 40-point gap between the two students, which a vision-only system would have completely missed.
+
+\subsection{System Output Reports}
+To demonstrate the final deliverable provided to the educator, the system's terminal output for the aforementioned test session is reproduced below. The report explicitly breaks down the audio events and applies the proportional threshold rules to generate the automated teacher feedback string.
+
+\begin{verbatim}
+============================================================
+        FINAL STUDENT ATTENTIVENESS REPORT
+============================================================
+
+──────────────────────────────────────────────────
+  Student: Tejas
+──────────────────────────────────────────────────
+Physical Attentiveness (CV)  : 4 / 5 (80.00%)
+  → Frames logged: 52
+  → Dominant state: listen
+
+Verbal Participation (Audio) : 5 / 5 (100.00%)
+  → Utterances recorded: 2
+  → Breakdown: Reasoning (1) | Questioning (0) | Yes/No (1) | Off-Topic (0)
+  → Teacher Feedback: Strong Analytical Skills: Frequently 
+    uses logical reasoning and explains concepts well.
+
+FINAL ENGAGEMENT SCORE       : 88.00 / 100
+  → Blend weights: 60% CV | 40% Audio
+================================
+
+──────────────────────────────────────────────────
+  Student: krishna
+──────────────────────────────────────────────────
+Physical Attentiveness (CV)  : 4 / 5 (80.00%)
+  → Frames logged: 45
+  → Dominant state: listen
+
+Verbal Participation (Audio) : 0 / 5 (0.00%)
+  → Utterances recorded: 2
+  → Breakdown: Reasoning (0) | Questioning (2) | Yes/No (0) | Off-Topic (2)
+  → Teacher Feedback: Distracted Speaker: Tends to 
+    participate, but often steers the conversation off-topic.
+
+FINAL ENGAGEMENT SCORE       : 48.00 / 100
+  → Blend weights: 60% CV | 40% Audio
+================================
+
+──────────────────────────────────────────────────
+  Student: saurav
+──────────────────────────────────────────────────
+Physical Attentiveness (CV)  : 5 / 5 (100.00%)
+  → Frames logged: 48
+  → Dominant state: write
+
+Verbal Participation (Audio) : 1 / 5 (20.00%)
+  → Utterances recorded: 3
+  → Breakdown: Reasoning (0) | Questioning (0) | Yes/No (3) | Off-Topic (0)
+  → Teacher Feedback: Passive Participant: Participates in 
+    class, but mostly with brief, surface-level answers.
+
+FINAL ENGAGEMENT SCORE       : 68.00 / 100
+  → Blend weights: 60% CV | 40% Audio
+================================
+\end{verbatim}
+
+\subsection{YOLO Object Override Validation}
+During testing, a student held a cell phone directly in front of the webcam. Without the YOLO override, the pose classifier returned \texttt{listen} at 99\%+ confidence because the student's body was upright and facing the camera. With the override enabled, YOLOv8n detected the \texttt{cell phone} class in the frame and forcibly relabeled the behavior as \texttt{distracted} at 95\% confidence. This override mechanism was also validated for \texttt{bottle} and \texttt{cup} detections, which correctly triggered the \texttt{drink} label.
+
+\subsection{MediaPipe vs. CNN Comparison}
+The original system used a three-layer convolutional neural network trained on 112$\times$112 pixel crops to classify body posture into four classes. During testing, this CNN exhibited a strong bias toward the \texttt{listen} class, predicting it at 99\%+ confidence even when the student was clearly looking sideways or down at a phone. The CNN was trained for only 4 epochs and lacked the spatial resolution to detect subtle head orientation changes. Replacing it with MediaPipe's geometric landmark analysis immediately resolved these misclassifications, as the five-point skeleton provides explicit information about head rotation that pixel-level classification cannot reliably capture.
+
+\section{Implementation Details}
+
+The complete system runs on consumer hardware without GPU acceleration. Table~\ref{tab:models} summarizes all models and their resource requirements.
+
+\begin{table}[htbp]
+\caption{Model Inventory and Sizes}
+\begin{center}
+\begin{tabular}{|l|l|r|}
+\hline
+\textbf{Component} & \textbf{Model} & \textbf{Size} \\
+\hline
+Object Detection & YOLOv8-nano & 6.5 MB \\
+Pose Estimation & MediaPipe Pose Lite & 5.8 MB \\
+Speech Recognition & Whisper (base) & 140 MB \\
+Sentence Embedding & all-MiniLM-L6-v2 & 80 MB \\
+Context Encoding & DialoGPT-medium & 1.5 GB \\
+Dialogue Act Proj. & SSCon Bi-Encoder & 10.8 MB \\
+Dialogue Act Class. & XGBoost (4-class) & 1.5 MB \\
+\hline
+\end{tabular}
+\label{tab:models}
+\end{center}
+\end{table}
+
+The system was implemented in Python 3.13 on macOS with Apple Silicon (MPS) acceleration for PyTorch operations. The vision and audio pipelines run in separate processes to avoid framework conflicts, coordinated through filesystem-based inter-process communication (CSV and JSON log files).
+
+\section{Conclusion and Future Work}
+
+We presented a working multimodal classroom engagement system that combines geometric pose estimation, dialogue act classification, and semantic relevance gating within a time-window aggregation framework. The key insight behind the system is that neither visual attention nor verbal participation alone tells the full story. By requiring speech to pass through two independent gates---acoustic reasoning detection and semantic topic matching---the system prevents students from inflating their scores through off-topic conversation. The YOLO object detection layer adds a practical safety net for common classroom distractions like cell phone usage.
+
+There are several directions for future work. First, the current speaker attribution method (last-visible student) is a simplification that could be replaced with a dedicated speaker diarization model. Second, the cosine similarity threshold of 0.35 was set heuristically and could benefit from systematic optimization across different subject areas. Third, the system currently operates on a single camera and microphone, but extending it to a multi-camera, multi-microphone array would enable coverage of larger classrooms. Finally, integrating the feedback generator with a real-time teacher dashboard application would allow educators to intervene during class rather than reviewing reports afterward.
+
+\section*{Acknowledgment}
+
+The authors would like to thank the students who participated in the testing and evaluation sessions for this system.
+
+\begin{thebibliography}{00}
+\bibitem{b1} G. Jocher, A. Chaurasia, and J. Qiu, ``Ultralytics YOLOv8,'' 2023. [Online]. Available: https://github.com/ultralytics/ultralytics
+\bibitem{b2} C. Lugaresi et al., ``MediaPipe: A framework for building perception pipelines,'' \emph{arXiv preprint arXiv:1906.08172}, 2019.
+\bibitem{b3} N. Reimers and I. Gurevych, ``Sentence-BERT: Sentence embeddings using Siamese BERT-Networks,'' in \emph{Proc. Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2019, pp. 3982--3992.
+\bibitem{b4} A. Suresh, J. Jacobs, C. Harber, M. Sumner, T. Fogarty, and S. D'Mello, ``Using transformers to provide teachers with personalized feedback on their classroom discourse: The TalkMoves application,'' in \emph{Proc. AAAI Conference on Artificial Intelligence}, vol. 36, no. 11, 2022, pp. 12828--12835.
+\bibitem{b5} A. Radford, J. W. Kim, T. Xu, G. Brockman, C. McLeavey, and I. Sutskever, ``Robust speech recognition via large-scale weak supervision,'' in \emph{Proc. International Conference on Machine Learning (ICML)}, 2023, pp. 28492--28518.
+\bibitem{b6} Y. Zhang et al., ``DialoGPT: Large-scale generative pre-training for conversational response generation,'' in \emph{Proc. ACL System Demonstrations}, 2020, pp. 270--278.
+\bibitem{b7} M. A. A. Dewan, M. Murshed, and F. Lin, ``Engagement detection in online learning: A review,'' \emph{Smart Learning Environments}, vol. 6, no. 1, pp. 1--20, 2019.
+\bibitem{b8} J. Zaletelj and A. Ko\v{s}ir, ``Predicting students' attention in the classroom from Kinect facial and body features,'' \emph{EURASIP Journal on Image and Video Processing}, vol. 2017, no. 1, pp. 1--12, 2017.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,10 @@
+trained_models/*
+venv/
+.venv/
+Intelligent-Classroom-System/venv/
+__pycache__/
+*.pyc
+.DS_Store
+lightning_logs/
+data/
+*.pdf
