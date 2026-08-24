@@ -1,0 +1,332 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+\title{Double-Gated Time-Window Aggregation: A Multimodal AI Approach to Classroom Attention Scoring}
+\author{\IEEEauthorblockN{1\textsuperscript{st} B.V. Tejas}
+\IEEEauthorblockA{\textit{Dept. of Computer Science and Engineering} \\
+\textit{PES University}\\
+Bengaluru, India \\
+bvtejas@pes.edu}
+}
+\maketitle
+\begin{abstract}
+Measuring how engaged students really are in a classroom has always been tricky. Most systems built far only use one source of data and miss important information.
+\begin{itemize}
+    \item Camera-based trackers look at body posture. Do not know if the student is actually taking part in the discussion.
+    \item Microphone-based trackers count how much students talk but can be fooled by students who talk loudly about things that're not relevant.
+\end{itemize}
+This paper presents a system that tackles both of these weaknesses. We built a system that uses both computer vision and natural language processing. It looks at data in one-minute windows.
+
+The visual part uses Google MediaPipe Pose to extract landmarks and classify posture. The audio part transcribes speech, classifies dialogue acts. Checks semantic relevance. Only speech that makes sense and is related to the lesson earns credit.
+
+The two scores are blended using a 60/40 formula to produce an engagement metric per student. We also add a pass that catches distractions like cell phones. The result is a system that can tell apart a student who's really focused, from someone who is just going through the motions.
+\end{abstract}
+\begin{IEEEkeywords}
+Multimodal Learning Analytics, Pose Estimation, Dialogue Acts.
+\end{IEEEkeywords}
+\section{Introduction}
+Teaching a class is tough. You have thirty or more students. You just cannot keep an eye on all of them at the same time. There is always someone in the back who looks like they are paying attention. They are really not. Then there is someone else who looks restless but they are actually really interested in what you are teaching. This is a problem for teachers. They want to know if their students are really engaged in the class.
+
+A lot of people have been doing research on this problem. They want to find a way to measure if students are engaged in the classroom. The solutions they have come up with so far are not perfect. Some people use cameras to track what students are doing. The cameras watch how students sit, where they look and try to figure out if they are focused on the lesson. These systems are pretty good at catching students who are clearly not paying attention. They miss a lot of other things. A student can sit up straight. Look at the board the whole time but not really be engaged in the lesson. The camera will think that student is very attentive.
+
+Other people use microphones to listen to what studentsre saying. They want to see if students are participating in the class. This system has its own problems. It cannot tell if what the students are saying is actually relevant, to the lesson. A student can talk the time but be talking about something completely different. They will still get a grade for participating.
+
+What we need is a system that looks at both what studentsre doing and what they are saying. It should check both things against each other. That is what we built. Our system uses a camera and a microphone. It looks at what the camera and microphone're picking up and combines them. It checks everything in one-minute periods. The microphone does not just count how words a student says. It checks if the student is really thinking about the lesson. It checks if what they are saying is actually related to the lesson. This is important because it prevents students from cheating the system.
+
+The main things we did in this paper are as follows:
+\begin{itemize}
+    \item We use a way to classify posture based on shapes. It uses five points from MediaPipe Pose 3D. This method is fast and works well even when people turn their heads. Other methods that use pictures and computers can be slow. Make mistakes.
+    \item Our system, for understanding language has two checks. First it figures out what someone is trying to do in a conversation. Then it compares what they say to the topic to make sure it is relevant. This helps us know if someone is talking about the thing.
+    \item We made a system that can look at a period of time and detect objects. It uses a way to detect objects and can work on a phone in real time. This helps us know if someone is using a cell phone or drinking something.
+    \item We have a system that gives feedback based on how students behave. It looks at how they talk and gives a summary to teachers. This helps teachers know what students are doing and how they can help them.
+\end{itemize}
+\section{Related Work}
+People have been looking at automated classroom observation from viewpoints. Others \cite{b7} did a survey of systems that detect how engaged students are and most of these systems use expressions or eye movements and only look at videos. Kosir \cite{b8} used body language features from OpenPose. Also looked at where people were looking to predict if students were paying attention in classroom videos but they did not look at what people were saying or listen to the audio. On the hand Suresh and others \cite{b4} came up with the TalkMoves framework, which figures out what teachers and students are saying by using special language models. They showed that things like when a teacher is giving evidence or making a point can be found reliably in classroom transcripts. They did not combine this with looking at videos.
+
+Others \cite{b2} introduced MediaPipe, which's a tool for building systems that use multiple types of data and it has been widely used for figuring out the pose of people in images. The Pose Landmarker model can find 33 points on a persons body. Works well on mobile devices. Gurevych \cite{b3} came up with Sentence-BERT, which shows that a special type of BERT model can make sentence embeddings that're meaningful and can be used to compare sentences. The type of model we use all-MiniLM-L6-v2 turns sentences into a set of 384 numbers. Works well for figuring out if sentences are similar in meaning.
+
+The SSCon learning method \cite{b4} trains two models at the time one that compares things and one that classifies things and it uses labels that it is pretty sure are correct to start with even if it does not have many labeled examples. This method is especially useful for classifying classroom dialogue, where it's hard to get many labeled examples. Far as we know nobody has made a system that combines looking at body poses figuring out what people are saying and determining what is relevant all within one system that looks at everything, over a period of time.
+
+\section{Proposed System Architecture}
+Our system is made up of two parts that work together. These two parts are controlled by a central session runner. Both parts work at the time: the computer vision part works on its own and the audio part works in the background of the main part. We have to keep them separate because the tools we use for each part like TensorFlow and PyTorch can cause problems if we use them together. We use a signal to help them work together and stop when they need to. We also wait for three seconds when we start up to make sure the camera is ready before we start loading the audio models. When we are done we stop both parts. Look at the logs to make a report.
+
+\subsection{Stream 1: Computer Vision Pipeline}
+The computer vision part looks at pictures of students. Figures out what they are doing. It does this every seconds. This part has three steps.
+
+\subsubsection{Person Detection with YOLOv8}
+We use a tool called YOLOv8 to find people in the pictures. We look at each picture. Use YOLOv8 to find the people in it. It also looks for things like cell phones and bottles that might be distracting. We use this information later to help us understand what is going on.
+
+\subsubsection{Pose-Based Behavior Classification}
+We look at the people we found and try to figure out what they are doing based on their pose. We take the picture of the person change the colors and use a tool called MediaPipe Pose Landmarker Lite to look at their pose. This tool gives us a lot of information, about the persons pose. We only use a few of those points to figure out what they are doing. We use these points to calculate some things about the persons pose. The computer vision pipeline and the MediaPipe Pose Landmarker Lite model work together to help us understand what the students are doing. The computer vision pipeline is a part of our system and it helps us to identify students by face and classify their physical behavior. The MediaPipe Pose Landmarker Lite model is a tool that we use in the computer vision pipeline to look at the students poses. R1 catches when someones head turns sharply and their nose is much closer to one ear than the other. It catches when one ear is not visible at all. Rule R2 catches students who look down at their desk or phone on the table. Rule R3 is for when a student sits up and centered.
+
+\subsubsection{YOLO Object Overrides}
+The system then checks if YOLO found a cell phone or a drinking cup in the frame. If theres a phone and the student was labeled as listening or writing they are labeled as distracted with 95 percent confidence. If a bottle or cup is detected the label changes to drink. Detecting a phone comes before detecting a beverage.
+
+\subsubsection{Face Recognition and Logging}
+Each persons image is also processed by a face recognition module. This module creates a 128- face code and compares it to pre-registered student photos. The comparison uses Euclidean face distance. The resulting log is a CSV file. It records the timestamp, student name, behavior label and classification confidence, for every frame.
+
+\subsection{Stream 2: Audio and NLP Pipeline}
+The audio stream is used to capture what people are saying write it down figure out what kind of conversation it is and check if it is related to the lesson.
+
+\subsubsection{Speech Capture and Transcription}
+The audio is recorded in parts that are 10 seconds long at a rate of 16,000 Hz. This means we get 160,000 samples for each part. We use a library called sounddevice to do this. Each part is saved as a WAV file and then we use OpenAI Whisper to write down what was said. We make sure to set a condition so the model does not repeat things it heard before when there is silence or noise in the background. If what someone says is too short we do not use it.
+
+\subsubsection{Speaker Attribution}
+Since the microphone picks up all the noise, in the classroom and cannot tell who is talking we look at the thing the camera saw and say that person is talking. We do this by looking at the line of the camera log and finding the persons name.
+
+\subsubsection{SSCon Dialogue Act Classification}
+We take what people said and try to figure out what kind of conversation it is. We use a way of doing this called SemiSupervised Contrastive pipeline. Here is how it works: first we look at what people said and add some special tokens. Then we use a model called DialoGPT-medium to get a number that represents what was said. We also take what the person just said and turn it into a number using another model. We put these two numbers together. Make a new number. Then we use another model to classify what kind of conversation it is. This model is trained to look at lots of conversations and figure out what kind they are. We use a way of training the model that helps it get better at figuring out what kind of conversation it is. The model has layers that help it understand what people are saying. We train the model using something called binary cross-entropy. We use a special optimizer to help it get better.
+
+\subsubsection{Semantic Relevance Gate}
+Even after the dialogue act is determined, the system requires a second check. The transcript and the teacher's lesson text for the day are both encoded by the Sentence-Transformer into 384-dimensional dense vectors, and their cosine similarity is computed:
+\begin{equation}
+\text{sim}(\mathbf{v}_{stu}, \mathbf{v}_{les}) = \frac{\mathbf{v}_{stu} \cdot \mathbf{v}_{les}}{\|\mathbf{v}_{stu}\| \, \|\mathbf{v}_{les}\|}
+\label{eq:cosine}
+\end{equation}
+If the similarity meets or exceeds the threshold $\tau = 0.35$, the utterance is considered on-topic. This threshold was set deliberately low because classroom speech is informal and will rarely match the lesson text verbatim.
+\section{Mathematical Model}
+\subsection{CV Stream: Majority Voting Aggregation}
+We take the labels from each frame and put them into one minute groups. For each group we look at all the labels lets say we have labels $b_1, b_2, \ldots, b_N$. We then figure out what the main behavior is by seeing which label appears the most.
+\begin{equation}
+B_t = \text{mode}(b_1, b_2, \ldots, b_N)
+\label{eq:mode}
+\end{equation}
+The last group is still counted, even if it is not full. If there are less, than 60 frames left we still use them. Each main behavior is given a point value.
+\begin{table}[htbp]
+\caption{CV Behavior Point Mapping}
+\begin{center}
+\begin{tabular}{|l|c|l|}
+\hline
+\textbf{Behavior} & \textbf{Points} & \textbf{Rationale} \\
+\hline
+Writing & 5 & Actively taking notes \\
+Listening & 4 & Attentive to board/teacher \\
+Drinking & 1 & Mild, brief distraction \\
+Distracted & 0 & Completely disengaged \\
+\hline
+\end{tabular}
+\label{tab:cv_points}
+\end{center}
+\end{table}
+The maximum points we can get for each group is 5 giving $P_{CV,\text{max}} = 5K$ for $K$ buckets.
+\subsection{Audio Stream: Tiered Double-Gate Scoring}
+We group events into one minute groups. These groups are the length as the CV session. For each group we look at what was said. Score it using the double gate system.
+
+\begin{table}[htbp]
+\caption{Tiered Audio Scoring Rules}
+\begin{center}
+\begin{tabular}{|c|p{3.8cm}|c|}
+\hline
+\textbf{Tier} & \textbf{Condition} & \textbf{Points} \\
+\hline
+1 & Reasoning act AND sim $\geq 0.35$ & 5 \\
+\hline
+2 & Not reasoning, but sim $\geq 0.35$ & 3 \\
+\hline
+3 & Short acknowledgment only (e.g., ``yes'', ``ok'', ``hmm'') & 1 \\
+\hline
+0 & Off-topic or silence & 0 \\
+\hline
+\end{tabular}
+\label{tab:audio_tiers}
+\end{center}
+\end{table}
+
+The group gets the score from what was said in that minute. If the highest score is 5 which's the top level we stop scoring that group right away. If there is nothing said in a group that group gets zero points. There are some things people say in a classroom that we listen for. These things include:
+
+yes, no, yeah, yep, nope, ok, okay, sure, right, correct, true, false, hmm, ya, na, haan, nahi
+
+The Audio Stream uses these classroom responses, for the Tiered Double-Gate Scoring.
+\subsection{Weighted Score Fusion}
+Both streams are converted to percentages:
+\begin{equation}
+C_{pct} = \frac{P_{CV,\text{earned}}}{P_{CV,\text{max}}} \times 100, \quad
+A_{pct} = \frac{P_{Audio,\text{earned}}}{P_{Audio,\text{max}}} \times 100
+\label{eq:pct}
+\end{equation}
+The final engagement score $E$ is a weighted blend:
+\begin{equation}
+E = 0.60 \cdot C_{pct} + 0.40 \cdot A_{pct}
+\label{eq:blend}
+\end{equation}
+The 60/40 weighting reflects the fact that visual data is continuous (captured every few seconds) while audio events are sparse and intermittent. If either stream has no data (e.g., the microphone was not available), its weight transfers entirely to the other stream.
+\section{Behavioral Feedback Generator}
+Beyond the numeric score, the system generates a natural-language feedback string for the teacher's dashboard. It counts how many utterances fell into each audio tier and applies proportional threshold rules:
+\begin{table}[htbp]
+\caption{Feedback Generation Threshold Rules}
+\begin{center}
+\begin{tabular}{|c|p{3.6cm}|p{2.8cm}|}
+\hline
+\textbf{Rule} & \textbf{Trigger Condition} & \textbf{Feedback Label} \\
+\hline
+1 & Zero total speaking events & Silent Observer \\
+\hline
+2 & Questioning $>$ 4, or $>$40\% of speech & Highly Inquisitive \\
+\hline
+3 & Reasoning $>$ 3, or $>$40\% of speech & Strong Analytical Skills \\
+\hline
+4 & Acknowledgments $>$ reasoning + questioning & Passive Participant \\
+\hline
+5 & Off-topic $>$ 2, or $>$50\% of speech & Distracted Speaker \\
+\hline
+\end{tabular}
+\label{tab:feedback}
+\end{center}
+\end{table}
+The thresholds use both absolute counts (for long sessions) and proportional checks (for short demos with only a few utterances). Multiple rules can fire simultaneously, and their labels are concatenated. If no specific rule triggers, the default label is ``Standard Participant.''
+\section{Experimental Evaluation}
+\subsection{Demonstration Setup}
+The system was tested in a classroom with four students, Karan, Saurav, Krishna and Tejas. We used a MacBook Pro with an Apple M3 Pro processor. We already had photos of each student so we used these to make face encodings. We stored these in the face\_data directory. The lesson was about gravity. The text we used covered things like force and the inverse-square law.
+
+\subsection{Double-Gate Effectiveness}
+Table~\ref{tab:gate_demo} shows how well the gated audio pipeline works. Two students, Tejas and Krishna spoke during the session. What they said was very different.
+\begin{table}[htbp]
+\caption{Double-Gate Discrimination: On-Topic vs. Off-Topic Speech}
+\begin{center}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|p{1.05cm}|p{1.95cm}|p{1.4cm}|c|c|}
+\hline
+\textbf{Student} & \textbf{Utterance} & \textbf{SSCon Act} & \textbf{Cos. Sim} & \textbf{Pts} \\
+\hline
+Tejas & ``Gravity is important because it pulls objects...'' & Providing evidence & 0.62 & 5 \\
+\hline
+Krishna & ``When are we going to go for lunch?'' & Asking for info & 0.12 & 0 \\
+\hline
+Krishna & ``When is the break?'' & Asking for info & 0.09 & 0 \\
+\hline
+\end{tabular}
+\label{tab:gate_demo}
+\end{center}
+\end{table}
+
+Tejas talked about gravity. Did a great job. He got a score of 5 points because his statement was good. Krishna asked questions about lunch and breaks. He did not do well. Got zero points. If we did not have the gate Krishna would have gotten points just for talking. Our system is fair and only gives points for good work. The gated audio pipeline is important for this. It helps us make sure students get points for saying things that're relevant to the lesson, like Newtonian gravity.
+\subsection{Fused Score Comparison}
+Table~\ref{tab:fused} shows the fused scores for two students from the same session. This table illustrates how the multimodal blend works when it is actually used.
+
+\begin{table}[htbp]
+\caption{Fused Multimodal Engagement Scores}
+\begin{center}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Student} & \textbf{CV (max 5)} & \textbf{Audio (max 5)} & \textbf{Blend} & \textbf{Feedback} \\
+\hline
+Tejas & 4/5 (80\%) & 5/5 (100\%) & 88.0 & Analytical \\
+\hline
+Krishna & 4/5 (80\%) & 0/5 (0\%) & 48.0 & Distracted \\
+\hline
+\end{tabular}
+\label{tab:fused}
+\end{center}
+\end{table}
+
+Both of these students had CV scores of 80 percent. This is because they had physical posture during the session. The difference in their engagement scores comes from the audio stream. The student Tejas earned 100 percent on audio because he used on-topic reasoning. On the hand the student Krishna earned 0 percent on audio. This is because both of his utterances were off-topic. The 60/40 weighted blend is used to calculate the score. This blend correctly produces a 40-point gap between the student Tejas and the student Krishna. A system that only uses vision would have completely missed this 40-point gap, between the student Tejas and the student Krishna.
+\subsection{System Output Reports}
+To demonstrate the final deliverable provided to the educator, the system's terminal output for the aforementioned test session is reproduced below. The report explicitly breaks down the audio events and applies the proportional threshold rules to generate the automated teacher feedback string.
+\begin{figure*}[!t]
+\footnotesize
+\begin{verbatim}
+============================================================
+        FINAL STUDENT ATTENTIVENESS REPORT
+============================================================
+--------------------------------------------------
+  Student: Tejas
+--------------------------------------------------
+Physical Attentiveness (CV)  : 4 / 5 (80.00%)
+  -> Frames logged: 52
+  -> Dominant state: listen
+Verbal Participation (Audio) : 5 / 5 (100.00%)
+  -> Utterances recorded: 2
+  -> Breakdown: Reasoning (1) | Questioning (0) | Yes/No (1) | Off-Topic (0)
+  -> Teacher Feedback: Strong Analytical Skills: Frequently 
+    uses logical reasoning and explains concepts well.
+FINAL ENGAGEMENT SCORE       : 88.00 / 100
+  -> Blend weights: 60% CV | 40% Audio
+================================
+--------------------------------------------------
+  Student: krishna
+--------------------------------------------------
+Physical Attentiveness (CV)  : 4 / 5 (80.00%)
+  -> Frames logged: 45
+  -> Dominant state: listen
+Verbal Participation (Audio) : 0 / 5 (0.00%)
+  -> Utterances recorded: 2
+  -> Breakdown: Reasoning (0) | Questioning (2) | Yes/No (0) | Off-Topic (2)
+  -> Teacher Feedback: Distracted Speaker: Tends to 
+    participate, but often steers the conversation off-topic.
+FINAL ENGAGEMENT SCORE       : 48.00 / 100
+  -> Blend weights: 60% CV | 40% Audio
+================================
+--------------------------------------------------
+  Student: saurav
+--------------------------------------------------
+Physical Attentiveness (CV)  : 5 / 5 (100.00%)
+  -> Frames logged: 48
+  -> Dominant state: write
+Verbal Participation (Audio) : 1 / 5 (20.00%)
+  -> Utterances recorded: 3
+  -> Breakdown: Reasoning (0) | Questioning (0) | Yes/No (3) | Off-Topic (0)
+  -> Teacher Feedback: Passive Participant: Participates in 
+    class, but mostly with brief, surface-level answers.
+FINAL ENGAGEMENT SCORE       : 68.00 / 100
+  -> Blend weights: 60% CV | 40% Audio
+================================
+\end{verbatim}
+\end{figure*}
+\subsection{YOLO Object Override Validation}
+During a test a student held a cell phone in front of the webcam. The pose classifier said the student was listening with over 99\% confidence without the YOLO override. This happened because the students body was straight and facing the camera. With the override on YOLOv8n found the cell phone in the frame. It then labeled the behavior as distracted with 95\% confidence. We also tested this override with bottle and cup detections. They worked correctly. Triggered the drink label.
+
+\subsection{MediaPipe vs. CNN Comparison} The original system used a kind of computer program to classify body posture. It was trained on pictures of people to recognize four different postures. During testing it often got it wrong. It would say the student was listening with over 99\% confidence. This happened when the student was clearly looking sideways or down at a phone. The program was only trained for a time and couldn't detect small changes, in head position. We replaced it with MediaPipes system. It uses a skeleton picture to find the students head and body. This worked better and fixed the mistakes. The new system can see when the students head is turned. The old system couldn't do this well.
+\section{Implementation Details}
+The complete system runs on consumer hardware without GPU acceleration. Table~\ref{tab:models} summarizes all models and their resource requirements.
+\begin{table}[htbp]
+\caption{Model Inventory and Sizes}
+\begin{center}
+\begin{tabular}{|l|l|r|}
+\hline
+\textbf{Component} & \textbf{Model} & \textbf{Size} \\
+\hline
+Object Detection & YOLOv8-nano & 6.5 MB \\
+Pose Estimation & MediaPipe Pose Lite & 5.8 MB \\
+Speech Recognition & Whisper (base) & 140 MB \\
+Sentence Embedding & all-MiniLM-L6-v2 & 80 MB \\
+Context Encoding & DialoGPT-medium & 1.5 GB \\
+Dialogue Act Proj. & SSCon Bi-Encoder & 10.8 MB \\
+Dialogue Act Class. & XGBoost (4-class) & 1.5 MB \\
+\hline
+\end{tabular}
+\label{tab:models}
+\end{center}
+\end{table}
+The system was implemented in Python 3.13 on macOS with Apple Silicon (MPS) acceleration for PyTorch operations. The vision and audio pipelines run in separate processes to avoid framework conflicts, coordinated through filesystem-based inter-process communication (CSV and JSON log files).
+
+\newpage
+\section{Conclusion and Future Work}
+We made a system for the classroom that helps teachers see how students are engaged. This system is called System Yhat. It combines geometry and talking and other things to figure out what is going on in the classroom. The important thing about this system is that it does not just look at what studentsre saying or what they are looking at. It uses two checks to make sure students are talking about the thing. The system also uses a tool called YOLO to detect things like cell phones.
+
+There are ways to make this system better. One thing we can do is make it better at knowing who is talking. Now it just assumes the last student it saw is the one talking. We can also make the system better at knowing what is relevant to the class. We just picked a number for this. We should try different numbers to see what works best. The system only works with one camera and one microphone. We can add more to make it work in bigger classrooms.
+\section*{Acknowledgment}
+The authors would like to thank the students who participated in the testing and evaluation sessions for this system.
+\begin{thebibliography}{00}
+\bibitem{b1} G. Jocher, A. Chaurasia, and J. Qiu, ``Ultralytics YOLOv8,'' 2023. [Online]. Available: https://github.com/ultralytics/ultralytics
+\bibitem{b2} C. Lugaresi et al., ``MediaPipe: A framework for building perception pipelines,'' \emph{arXiv preprint arXiv:1906.08172}, 2019.
+\bibitem{b3} N. Reimers and I. Gurevych, ``Sentence-BERT: Sentence embeddings using Siamese BERT-Networks,'' in \emph{Proc. Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2019, pp. 3982--3992.
+\bibitem{b4} A. Suresh, J. Jacobs, C. Harber, M. Sumner, T. Fogarty, and S. D'Mello, ``Using transformers to provide teachers with personalized feedback on their classroom discourse: The TalkMoves application,'' in \emph{Proc. AAAI Conference on Artificial Intelligence}, vol. 36, no. 11, 2022, pp. 12828--12835.
+\bibitem{b5} A. Radford, J. W. Kim, T. Xu, G. Brockman, C. McLeavey, and I. Sutskever, ``Robust speech recognition via large-scale weak supervision,'' in \emph{Proc. International Conference on Machine Learning (ICML)}, 2023, pp. 28492--28518.
+\bibitem{b6} Y. Zhang et al., ``DialoGPT: Large-scale generative pre-training for conversational response generation,'' in \emph{Proc. ACL System Demonstrations}, 2020, pp. 270--278.
+\bibitem{b7} M. A. A. Dewan, M. Murshed, and F. Lin, ``Engagement detection in online learning: A review,'' \emph{Smart Learning Environments}, vol. 6, no. 1, pp. 1--20, 2019.
+\bibitem{b8} J. Zaletelj and A. Ko\v{s}ir, ``Predicting students' attention in the classroom from Kinect facial and body features,'' \emph{EURASIP Journal on Image and Video Processing}, vol. 2017, no. 1, pp. 1--12, 2017.
+\end{thebibliography}
+\end{document}

@@ -1,8 +1,18 @@
-matplotlib==3.6.3
-numpy==1.23.4
-pandas==1.5.0
-pytorch_lightning==2.0.2
-scikit_learn==1.2.2
-torch==1.12.1
+matplotlib>=3.8.0,<4
+numpy>=2.1.0,<3
+pandas>=2.2.0,<3
+pytorch_lightning>=2.0.2,<3
+scikit_learn>=1.5.0,<2
+torch>=2.0.0
 tqdm==4.64.1
-xgboost==1.7.5
+xgboost>=2.1.0,<4
+# Audio + NLP pipeline
+openai-whisper>=20231117
+sounddevice>=0.4.6
+soundfile>=0.12.1
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+# Computer vision pipeline (Intelligent-Classroom-System)
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+mediapipe>=0.10.0

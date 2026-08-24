@@ -16,6 +16,7 @@ import threading
 import time
 import signal
 import subprocess
+import platform
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,7 @@ SSCON_OUTPUT = os.path.join(BASE_DIR, "sscon_output.json")
 
 def clear_old_logs():
     """Clear previous session data so we start fresh."""
+    os.makedirs(CV_DIR, exist_ok=True)
     # Clear CV log (keep header)
     with open(CV_LOG, 'w') as f:
         f.write("Timestamp,Person,Behavior,Confidence\n")
@@ -37,6 +39,26 @@ def clear_old_logs():
         print("[Session] Cleared sscon_output.json")
 
 
+def _cv_python_executable():
+    """Resolve the Python executable for the CV subprocess (Windows + macOS/Linux)."""
+    if platform.system() == "Windows":
+        candidates = [
+            os.path.join(CV_DIR, "venv", "Scripts", "python.exe"),
+            os.path.join(BASE_DIR, "venv", "Scripts", "python.exe"),
+            sys.executable,
+        ]
+    else:
+        candidates = [
+            os.path.join(CV_DIR, "venv", "bin", "python"),
+            os.path.join(BASE_DIR, "venv", "bin", "python"),
+            sys.executable,
+        ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return sys.executable
+
+
 def run_cv_pipeline(stop_event):
     """
     Run the CV camera pipeline as a subprocess.
@@ -44,7 +66,7 @@ def run_cv_pipeline(stop_event):
     (TensorFlow + PyTorch in the same process can cause issues).
     """
     print("[Session] Starting CV camera pipeline...")
-    venv_python = os.path.join(CV_DIR, "venv", "bin", "python")
+    venv_python = _cv_python_executable()
 
     proc = subprocess.Popen(
         [venv_python, "main.py"],
@@ -113,6 +135,10 @@ def generate_report():
 
 
 def main():
+    from setup_models import ensure_trained_models
+
+    ensure_trained_models(BASE_DIR)
+
     print("=" * 60)
     print("🎓 INTELLIGENT CLASSROOM SESSION RUNNER")
     print("=" * 60)

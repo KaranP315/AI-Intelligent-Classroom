@@ -17,13 +17,16 @@ XGBClassifier._estimator_type = "classifier"
 from train_biencoder import HiddenLayerBiEncoder
 
 
+from setup_models import get_torch_device
+
+
 def main():
     print("=" * 60)
     print("SSCon Dialogue Act Classifier Inference")
     print("=" * 60)
 
     # 1. Select Device
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = get_torch_device()
     print(f"Using device: {device}")
 
     # 2. Load NLP models for embedding generation

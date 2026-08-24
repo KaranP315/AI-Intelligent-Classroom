@@ -10,11 +10,16 @@ import numpy as np
 import os
 
 
+from setup_models import ensure_trained_models, get_torch_device
+
+
 def main():
+    ensure_trained_models(os.path.dirname(os.path.abspath(__file__)))
+
     # Your data preprocessing code goes here...
 
     # Define the input arguments for SSCon_run
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = get_torch_device()
     unlabeled_train_df = pd.read_pickle("data/unlabeled_training_data.pkl")  # DataFrame of unlabeled training data
     labeled_train_df = pd.read_pickle("data/labeled_training_data.pkl")  # DataFrame of labeled training data
     val_df = pd.read_pickle("data/validation_data.pkl")  # DataFrame of validation data

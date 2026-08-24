@@ -33,6 +33,7 @@ XGBClassifier._estimator_type = "classifier"
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from train_biencoder import HiddenLayerBiEncoder
+from setup_models import get_torch_device
 
 
 # SSCon act mapping (from the paper / inference.py)
@@ -104,7 +105,7 @@ class AudioListener:
         self.whisper_model = whisper.load_model("base")
 
         # SSCon Models
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.device = get_torch_device()
         print(f"[Audio] SSCon device: {self.device}")
 
         print("[Audio] Loading Sentence-BERT (all-MiniLM-L6-v2)...")
