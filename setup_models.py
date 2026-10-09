@@ -47,7 +47,7 @@ def ensure_trained_models(base_dir=".", force=False):
     ]
 
     if all(os.path.exists(os.path.join(data_dir, name)) for name in required):
-        print("[Setup] Found training pickles — running SSCon training...")
+        print("[Setup] Found training pickles  running SSCon training...")
         import runpy
 
         runpy.run_path(os.path.join(base_dir, "main.py"), run_name="__main__")

@@ -1,10 +1,64 @@
-trained_models/*
-venv/
-.venv/
-Intelligent-Classroom-System/venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-.DS_Store
+*.py[cod]
+*$py.class
+*/__pycache__/
+Intelligent-Classroom-System/__pycache__/
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+Intelligent-Classroom-System/venv/
+
+# PyTorch & ML Cache / Large Models
 lightning_logs/
+all-MiniLM-L6-v2/
+*.pt
+*.task
+Intelligent-Classroom-System/yolov8n.pt
+Intelligent-Classroom-System/models/*.task
+
+# Runtime Session Logs and Audio Artifacts
+sscon_output.json
+debug_last_chunk.wav
+out.txt
+attentiveness_log.csv
+Intelligent-Classroom-System/attentiveness_log.csv
+
+# User Data
 data/
 *.pdf
+
+# OS Specific
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini

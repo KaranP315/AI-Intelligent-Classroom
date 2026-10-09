@@ -1,1 +1,8 @@
-Gravity is the invisible force that pulls objects toward each other. Earth's gravity is what keeps you on the ground and what makes things fall. Universal gravitation states that every object in the universe attracts every other object. The strength of this gravitational force depends on two things: the mass of the objects and the distance between them. Objects with more mass have more gravity. As the distance between two objects increases, the gravitational force between them gets weaker.
+Gravity is the fundamental force of attraction that pulls objects and matter toward each other. 
+Earth's gravity is what keeps you on the ground, gives objects weight, and is what makes things fall toward the center of the planet.
+Sir Isaac Newton's law of universal gravitation states that every particle or celestial body in the universe attracts every other object with a force proportional to their masses and inversely proportional to the square of the distance between them.
+The strength of this gravitational pull depends on two key factors: the mass of the objects and the distance between the two celestial bodies.
+Objects with more mass exert a much stronger gravitational pull, while objects with less mass have weaker gravity.
+As the distance between two planets or celestial objects increases, the gravitational force between them gets weaker; when distance decreases, the gravitational force becomes stronger.
+The gravitational force of the moon and the sun pulls on the Earth's oceans, creating ocean tides.
+Gravity keeps the moon in orbit around the Earth and keeps all planets in orbital motion around the Sun.

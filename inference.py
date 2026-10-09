@@ -49,7 +49,7 @@ def main():
         print("Error: trained_models/xgboost_classifier.json not found.")
         sys.exit(1)
 
-    bimodel = torch.load("trained_models/bimodel.pt", weights_only=False).to(
+    bimodel = torch.load("trained_models/bimodel.pt", map_location=device, weights_only=False).to(
         device
     )
     bimodel.eval()

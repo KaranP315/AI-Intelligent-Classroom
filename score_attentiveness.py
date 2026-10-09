@@ -112,6 +112,11 @@ def generate_final_report(dialogue_log_path, cv_csv_path):
 
     # Gather all unique students
     all_students = set(list(student_cv.keys()) + list(student_audio.keys()))
+    
+    # If registered students were detected, ignore spurious unassigned 'Unknown' frames
+    named_students = {s for s in all_students if s != "Unknown"}
+    if named_students:
+        all_students = named_students
 
     if not all_students:
         print("\nNo student data found. Run a session first!")
@@ -125,68 +130,62 @@ def generate_final_report(dialogue_log_path, cv_csv_path):
         # 4. Call the robust Double-Gated Scorer!
         result = double_gated_scorer.calculate_final_grade(cv_logs, audio_events, subject_text)
 
-        print(f"\n{'─' * 50}")
+        print(f"\n{'-' * 50}")
         print(f"  Student: {student}")
-        print(f"{'─' * 50}")
-        print(f"  📷 Physical Attentiveness (CV):      {result['cv_earned']}/{result['cv_max']}  ({result['cv_percentage']}%)")
-        print(f"  🎤 Dialogue Participation Points:     {result['audio_earned']}/{result['audio_max']}  ({result['audio_percentage']}%)")
-        print(f"  ──────────────────────────────────────")
-        print(f"  🎓 OVERALL ENGAGEMENT SCORE:          {result['final_score']}/100")
+        print(f"{'-' * 50}")
+        print(f"   Physical Attentiveness (CV):      {result['cv_earned']}/{result['cv_max']}  ({result['cv_percentage']}%)")
+        print(f"   Dialogue Participation Points:     {result['audio_earned']}/{result['audio_max']}  ({result['audio_percentage']}%)")
+        print(f"  ")
+        print(f"   OVERALL ENGAGEMENT SCORE:          {result['final_score']}/100")
         
         # Print breakdown of audio gates for transparency
         if audio_events:
             print(f"  \n  [Audio Breakdown]")
+            on_topic_count = 0
+            off_topic_count = 0
+            reasoning_count = 0
+            questioning_count = 0
+            yes_no_count = 0
+
             for event in audio_events:
-                is_rel = double_gated_scorer.check_audio_relevance(event['spoken_text'], subject_text)
-                is_reason = event['is_reasoning']
-                
-                # Determine tier
-                ack = double_gated_scorer.calculate_audio_points([event], subject_text)[0]
-                if ack == 5:
-                    tier = "Tier 1 (Reasoning)"
-                elif ack == 3:
-                    tier = "Tier 2 (Factual)"
-                elif ack == 1:
-                    tier = "Tier 3 (Short)"
+                spoken = event.get('spoken_text', '').strip()
+                is_rel = double_gated_scorer.check_audio_relevance(spoken, subject_text)
+                is_reason = event.get('is_reasoning', False)
+
+                if is_rel:
+                    on_topic_count += 1
+                    if is_reason:
+                        reasoning_count += 1
+                        tier = f"On-Topic Reasoning (+{double_gated_scorer.ON_TOPIC_POINTS} pts)"
+                    else:
+                        questioning_count += 1
+                        tier = f"On-Topic (+{double_gated_scorer.ON_TOPIC_POINTS} pts)"
                 else:
-                    tier = "Off-Topic"
-                    
-                print(f"   t={int(event['timestamp'])}s | {tier:18} | \"{event['spoken_text'][:30]}...\"")
+                    off_topic_count += 1
+                    tier = f"Off-Topic (-{double_gated_scorer.OFF_TOPIC_PENALTY} pts)"
 
-        # ── Build the audio profile for the Feedback Generator ──
-        # Count how many events fell into each tier for this student
-        reasoning_count = 0
-        questioning_count = 0
-        yes_no_count = 0
-        off_topic_count = 0
+                print(f"   t={int(event['timestamp'])}s | {tier:24} | \"{spoken[:30]}...\"")
 
-        for event in audio_events:
-            pts = double_gated_scorer.calculate_audio_points([event], subject_text)[0]
-            is_reason = event.get('is_reasoning', False)
-            if pts == 5:
-                # Tier 1: Reasoning + On-Topic
-                reasoning_count += 1
-            elif pts == 3:
-                # Tier 2: Factual / On-Topic (could be a question or a claim)
-                # Check SSCon act to distinguish questioning from factual
-                questioning_count += 1
-            elif pts == 1:
-                # Tier 3: Short acknowledgment (yes/no)
-                yes_no_count += 1
-            else:
-                # 0 pts: Off-Topic
-                off_topic_count += 1
+            total_spk = on_topic_count + off_topic_count
+            plus_pts = on_topic_count * double_gated_scorer.ON_TOPIC_POINTS
+            minus_pts = off_topic_count * double_gated_scorer.OFF_TOPIC_PENALTY
+            net_pts = max(0, plus_pts - minus_pts)
+            max_pts = total_spk * double_gated_scorer.ON_TOPIC_POINTS if total_spk > 0 else 0
+            print(f"   Summary: {total_spk} utterances | {on_topic_count} On-Topic (+{plus_pts} pts) | {off_topic_count} Off-Topic (-{minus_pts} pts) | Net: {net_pts}/{max_pts} pts")
 
-        audio_profile = {
-            'reasoning_count': reasoning_count,
-            'questioning_count': questioning_count,
-            'yes_no_count': yes_no_count,
-            'off_topic_count': off_topic_count,
-        }
+            audio_profile = {
+                'reasoning_count': reasoning_count,
+                'questioning_count': questioning_count,
+                'yes_no_count': yes_no_count,
+                'off_topic_count': off_topic_count,
+            }
 
-        # Generate and print behavioral feedback
-        fb = feedback_generator.generate_student_feedback(audio_profile)
-        print(f"\n  📝 Teacher Feedback: {fb}")
+            # Generate and print behavioral feedback
+            fb = feedback_generator.generate_student_feedback(audio_profile)
+            print(f"\n   Teacher Feedback: {fb}")
+        else:
+            fb = feedback_generator.generate_student_feedback({})
+            print(f"\n   Teacher Feedback: {fb}")
 
     print(f"\n{'=' * 60}\n")
 

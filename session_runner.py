@@ -43,15 +43,15 @@ def _cv_python_executable():
     """Resolve the Python executable for the CV subprocess (Windows + macOS/Linux)."""
     if platform.system() == "Windows":
         candidates = [
+            sys.executable,
             os.path.join(CV_DIR, "venv", "Scripts", "python.exe"),
             os.path.join(BASE_DIR, "venv", "Scripts", "python.exe"),
-            sys.executable,
         ]
     else:
         candidates = [
+            sys.executable,
             os.path.join(CV_DIR, "venv", "bin", "python"),
             os.path.join(BASE_DIR, "venv", "bin", "python"),
-            sys.executable,
         ]
     for candidate in candidates:
         if os.path.exists(candidate):
@@ -82,7 +82,7 @@ def run_cv_pipeline(stop_event):
         line = proc.stdout.readline()
         if line:
             # Print CV output with a prefix for clarity
-            print(f"  [📷] {line.rstrip()}")
+            print(f"  [] {line.rstrip()}")
         if proc.poll() is not None:
             # Process exited (user pressed ESC in the video window)
             stop_event.set()
@@ -96,30 +96,24 @@ def run_cv_pipeline(stop_event):
     print("[Session] CV camera pipeline stopped.")
 
 
-def run_audio_pipeline(stop_event):
+def run_audio_pipeline(listener, stop_event):
     """
-    Run the Audio+SSCon pipeline in the current process.
+    Run the Audio+SSCon pipeline.
     """
-    # Import here to avoid loading SSCon models if not needed
-    from audio_listener import AudioListener
+    try:
+        # Run in a thread so we can monitor stop_event
+        audio_thread = threading.Thread(target=listener.run, daemon=True)
+        audio_thread.start()
 
-    listener = AudioListener(
-        cv_log_path=CV_LOG,
-        sscon_output_path=SSCON_OUTPUT,
-        chunk_duration=10,
-        sample_rate=16000
-    )
+        # Wait until stop is signaled
+        while not stop_event.is_set():
+            time.sleep(0.5)
 
-    # Run in a thread so we can monitor stop_event
-    audio_thread = threading.Thread(target=listener.run, daemon=True)
-    audio_thread.start()
-
-    # Wait until stop is signaled
-    while not stop_event.is_set():
-        time.sleep(0.5)
-
-    listener.stop()
-    audio_thread.join(timeout=5)
+        listener.stop()
+        audio_thread.join(timeout=5)
+    except Exception as e:
+        import traceback
+        print(f"\n[Audio] FATAL ERROR IN AUDIO PIPELINE:\n{traceback.format_exc()}")
 
 
 def generate_report():
@@ -127,11 +121,17 @@ def generate_report():
     print("\n" + "=" * 60)
     print("GENERATING FINAL ATTENTIVENESS REPORT...")
     print("=" * 60)
+    sys.stdout.flush()
 
-    # Import and run directly
-    sys.path.insert(0, BASE_DIR)
-    from score_attentiveness import generate_final_report
-    generate_final_report(SSCON_OUTPUT, CV_LOG)
+    try:
+        # Import and run directly
+        sys.path.insert(0, BASE_DIR)
+        from score_attentiveness import generate_final_report
+        generate_final_report(SSCON_OUTPUT, CV_LOG)
+    except Exception as e:
+        import traceback
+        print(f"\n[Report Error]: {e}\n{traceback.format_exc()}")
+    sys.stdout.flush()
 
 
 def main():
@@ -140,16 +140,16 @@ def main():
     ensure_trained_models(BASE_DIR)
 
     print("=" * 60)
-    print("🎓 INTELLIGENT CLASSROOM SESSION RUNNER")
+    print(" INTELLIGENT CLASSROOM SESSION RUNNER")
     print("=" * 60)
     print()
     print("This will start:")
-    print("  📷 Camera pipeline  — tracks physical behavior (listen/write/trance/drink)")
-    print("  🎤 Microphone       — records & classifies dialogue acts via SSCon")
+    print("   Camera pipeline   tracks physical behavior (listen/write/trance/drink)")
+    print("   Microphone        records & classifies dialogue acts via SSCon")
     print()
     print("Both run simultaneously. To end the session:")
-    print("  • Click the video window and press ESC, or")
-    print("  • Press Ctrl+C in this terminal")
+    print("   Click the video window and press ESC, or")
+    print("   Press Ctrl+C in this terminal")
     print()
 
     # Clear old data
@@ -169,17 +169,26 @@ def main():
     cv_thread = threading.Thread(target=run_cv_pipeline, args=(stop_event,), daemon=True)
     cv_thread.start()
 
-    # Give the camera a moment to start before loading audio models
-    print("[Session] Waiting 3 seconds for camera to initialize...")
-    time.sleep(3)
+    print("[Session] Loading Audio ML Models (this takes 15-30 seconds)...")
+    from audio_listener import AudioListener
+    listener = AudioListener(
+        cv_log_path=CV_LOG,
+        sscon_output_path=SSCON_OUTPUT,
+        chunk_duration=8,
+        sample_rate=16000
+    )
 
     # Start Audio+SSCon pipeline
     print("[Session] Starting Audio+SSCon pipeline...")
-    audio_thread = threading.Thread(target=run_audio_pipeline, args=(stop_event,), daemon=True)
+    audio_thread = threading.Thread(target=run_audio_pipeline, args=(listener, stop_event,), daemon=True)
     audio_thread.start()
 
+    # Preload Relevance Gateway model into memory so shutdown report is instant
+    import double_gated_scorer
+    double_gated_scorer._get_model()
+
     print("\n" + "=" * 60)
-    print("🟢 SESSION IS LIVE — Camera + Microphone active!")
+    print(" SESSION IS LIVE  Camera + Microphone active!")
     print("=" * 60 + "\n")
 
     # Wait for session to end
@@ -198,7 +207,7 @@ def main():
     generate_report()
 
     print("\n" + "=" * 60)
-    print("🎓 SESSION COMPLETE")
+    print(" SESSION COMPLETE")
     print("=" * 60)
 
 

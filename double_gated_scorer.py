@@ -6,27 +6,27 @@ data streams (Computer Vision + Audio NLP) through 1-minute bucket
 aggregation with a semantic relevance gateway.
 
 Architecture:
-    ┌─────────────────────────────────────────────────────────────┐
+    ┌------------------------------------------------------------─┐
     │                    session_runner.py                        │
     │          (feeds CV frames + Audio events in real-time)      │
-    └──────────────┬──────────────────────────┬───────────────────┘
+    └--------------┬--------------------------┬------------------─┘
                    │                          │
          CV Frame Logs                  Audio Events
                    │                          │
                    ▼                          ▼
-       ┌───────────────────┐      ┌─────────────────────────┐
+       ┌------------------─┐      ┌------------------------─┐
        │  1-Min CV Buckets │      │  Relevance Gateway      │
        │  (Majority Vote)  │      │  (Sentence Transformers │
        │                   │      │   + Cosine Similarity)  │
        │  write  → 5 pts   │      │                         │
        │  listen → 4 pts   │      │  Gate 1: is_reasoning?  │
        │  distracted → 1pt │      │  Gate 2: on-topic?      │
-       └────────┬──────────┘      └───────────┬─────────────┘
+       └--------┬----------┘      └----------─┬------------─┘
                 │                             │
                 ▼                             ▼
           CV % (0-100)                  Audio % (0-100)
                 │                             │
-                └──────────┬──────────────────┘
+                └----------┬------------------┘
                            │
                            ▼
                  Final = (CV × 0.60) + (Audio × 0.40)
@@ -35,11 +35,11 @@ Architecture:
 import math
 from collections import Counter, defaultdict
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------─
 # Lazy-loaded Singleton for the Sentence Transformer model.
 # This ensures the ~80MB model is loaded into GPU/CPU memory exactly ONCE,
 # no matter how many times check_audio_relevance() is called.
-# ─────────────────────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------------─
 
 _model = None
 
@@ -52,8 +52,14 @@ def _get_model():
     """
     global _model
     if _model is None:
+        import os
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer('all-MiniLM-L6-v2')
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        local_path = os.path.join(base_dir, "all-MiniLM-L6-v2")
+        if os.path.exists(local_path):
+            _model = SentenceTransformer(local_path)
+        else:
+            _model = SentenceTransformer('all-MiniLM-L6-v2')
     return _model
 
 
@@ -61,40 +67,48 @@ def _get_model():
 # STEP 1: Audio Relevance Gateway
 # ═════════════════════════════════════════════════════════════════════════════
 
-def check_audio_relevance(spoken_text: str, subject_text: str, threshold: float = 0.35) -> bool:
+def check_audio_relevance(spoken_text: str, subject_text: str, threshold: float = 0.25) -> bool:
     """
-    Semantic relevance gate.  Compares a student's spoken utterance against
+    Semantic relevance gate. Compares a student's spoken utterance against
     the day's uploaded subject/lecture text using cosine similarity of
     sentence embeddings.
+    
+    Evaluates similarity against both the full text and individual concept
+    sentences, taking the maximum score to accurately match short or conversational
+    classroom questions.
 
     Args:
         spoken_text:  What the student actually said (transcribed by Whisper).
         subject_text: The reference text for today's class topic/lecture notes.
-        threshold:    Minimum cosine similarity to be considered "on-topic".
-                      Default 0.35 is deliberately lenient — classroom speech
-                      is informal and won't be a verbatim match.
+        threshold:    Minimum cosine similarity to be considered "on-topic" (default: 0.25).
 
     Returns:
         True if the utterance is semantically relevant to the subject matter.
     """
-    # Edge case: empty strings can never be relevant
     if not spoken_text or not spoken_text.strip():
         return False
     if not subject_text or not subject_text.strip():
-        # If no subject text was uploaded, we can't gate — let everything through
         return True
 
     from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
 
     model = _get_model()
 
-    # Encode both texts into dense 384-dim vectors
-    embeddings = model.encode([spoken_text, subject_text])
+    # Split subject text into sentences/clauses for granular semantic matching
+    sentences = [
+        s.strip() for s in subject_text.replace('\n', '. ').split('.')
+        if len(s.strip()) > 5
+    ]
+    all_refs = [subject_text.strip()] + (sentences if sentences else [])
 
-    # Cosine similarity returns a 2×2 matrix; we want [0][1]
-    similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+    spoken_emb = model.encode([spoken_text.strip()])
+    refs_emb = model.encode(all_refs)
 
-    return similarity >= threshold
+    sims = cosine_similarity(spoken_emb, refs_emb)[0]
+    max_similarity = float(np.max(sims))
+
+    return max_similarity >= threshold
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -156,17 +170,23 @@ def calculate_cv_points(cv_frame_logs: list) -> tuple:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# STEP 2b: Audio 1-Minute Bucket Aggregator (Double-Gated)
+# STEP 2b: Audio Participation Scoring (Utterance-Level)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def calculate_audio_points(audio_events: list, subject_text: str,
-                           session_buckets: int = 0) -> tuple:
-    """
-    Aggregates audio events into 1-minute buckets with a DOUBLE gate:
-        Gate 1: Was the utterance classified as reasoning by SSCon? (is_reasoning)
-        Gate 2: Is the utterance semantically relevant to today's subject?
+ON_TOPIC_POINTS = 4
+OFF_TOPIC_PENALTY = 2  # Deducts 2 points per off-topic utterance
 
-    Both gates must pass for a bucket to earn the full 5 points.
+
+def calculate_audio_points(audio_events: list, subject_text: str,
+                           session_buckets: int = 0,
+                           off_topic_penalty: int = None) -> tuple:
+    """
+    Calculates audio participation points based on utterance-level relevance:
+      - Each on-topic utterance: +4 points
+      - Each off-topic utterance: -penalty points (default: -2)
+      - If net points <= 0: earned = 0.0, audio_pct = 0.0%
+      - If net points > 0: audio_pct = (net_points / (total_spoken * 4)) * 100
+      - Scaled out of 10: earned = round((audio_pct / 100.0) * 10.0, 1)
 
     Args:
         audio_events: List of dicts, each containing:
@@ -176,89 +196,50 @@ def calculate_audio_points(audio_events: list, subject_text: str,
                 'spoken_text': str       # Whisper transcription
             }
         subject_text: The reference text for today's class topic.
-        session_buckets: Total number of 1-minute buckets in the session
-                         (from the CV side). If 0, it is calculated from
-                         the audio timestamps alone.
+        session_buckets: (Unused / backwards compatible)
+        off_topic_penalty: Deduction per off-topic utterance (default: 2)
 
     Returns:
-        (earned_points, max_possible_points)
-
-    Example:
-        >>> events = [
-        ...     {'timestamp': 30, 'is_reasoning': True,
-        ...      'spoken_text': 'Gravity pulls objects toward Earth'},
-        ... ]
-        >>> calculate_audio_points(events, "Newton's laws of motion and gravity")
-        (5, 5)   # 1 bucket, gate passed → 5 pts
+        (earned_out_of_10, max_10)
     """
     if not audio_events:
-        return (0, 0)
+        return (0.0, 10)
 
-    # ── Group events by minute bucket ──
-    # Minute 0 = timestamps 0–59s, Minute 1 = 60–119s, etc.
-    buckets = defaultdict(list)
+    if off_topic_penalty is None:
+        import os
+        off_topic_penalty = int(os.getenv("OFF_TOPIC_PENALTY", str(OFF_TOPIC_PENALTY)))
+
+    on_topic_count = 0
+    off_topic_count = 0
+
     for event in audio_events:
-        minute_idx = int(event['timestamp'] // 60)
-        buckets[minute_idx].append(event)
-
-    # Use the CV session length if provided, otherwise fall back to audio timestamps
-    if session_buckets > 0:
-        num_buckets = session_buckets
-    else:
-        max_minute = max(buckets.keys())
-        num_buckets = max_minute + 1
-
-    earned = 0
-    for minute_idx in range(num_buckets):
-        events_in_bucket = buckets.get(minute_idx, [])
-
-        # A bucket with no audio events scores 0 (student was silent)
-        if not events_in_bucket:
+        spoken = event.get('spoken_text', '').strip()
+        if not spoken:
             continue
+        is_relevant = check_audio_relevance(spoken, subject_text)
+        if is_relevant:
+            on_topic_count += 1
+        else:
+            off_topic_count += 1
 
-        # Tiered Gate Logic:
-        # Tier 1 (5 pts): Reasoning AND On-Topic (Deep engagement)
-        # Tier 2 (3 pts): Not reasoning, but On-Topic (Factual answers, asking questions)
-        # Tier 3 (1 pt): Short acknowledgment ("yes", "no", "yeah", etc.)
-        # 0 pts: Silent OR Off-Topic (talking about irrelevant things)
-        
-        # Words that count as basic classroom acknowledgments
-        ACKNOWLEDGMENTS = {
-            'yes', 'no', 'yeah', 'yep', 'nope', 'ok', 'okay',
-            'sure', 'right', 'correct', 'true', 'false', 'hmm',
-            'ya', 'na', 'haan', 'nahi',
-        }
-        
-        highest_score_for_bucket = 0
-        
-        for event in events_in_bucket:
-            spoken = event.get('spoken_text', '').strip()
-            is_reason = event.get('is_reasoning', False)
-            is_relevant = check_audio_relevance(spoken, subject_text)
-            
-            if is_reason and is_relevant:
-                # Tier 1: Deep analytical reasoning on the class topic
-                score = 5
-            elif is_relevant:
-                # Tier 2: Factual on-topic answer (not deep reasoning)
-                score = 3
-            elif spoken.lower().rstrip('.!?') in ACKNOWLEDGMENTS:
-                # Tier 3: Short acknowledgment — student is at least responding
-                score = 1
-            else:
-                # Off-Topic: talking about pizza, lunch, etc. — no credit
-                score = 0
-                
-            if score > highest_score_for_bucket:
-                highest_score_for_bucket = score
-                
-            if highest_score_for_bucket == 5:
-                break  # Max score achieved for this bucket, no need to check further
-                
-        earned += highest_score_for_bucket
+    total_spoken = on_topic_count + off_topic_count
+    if total_spoken == 0:
+        return (0.0, 10)
 
-    max_possible = num_buckets * 5
-    return (earned, max_possible)
+    plus_points = on_topic_count * ON_TOPIC_POINTS
+    minus_points = off_topic_count * off_topic_penalty
+    net_points = plus_points - minus_points
+
+    # If in total it is negative, put 0 on 10
+    if net_points <= 0:
+        earned_out_of_10 = 0.0
+    else:
+        max_possible_points = total_spoken * ON_TOPIC_POINTS
+        # (plus points divided by each time spoken * 4) * 100
+        audio_pct = (net_points / max_possible_points) * 100.0
+        earned_out_of_10 = round((audio_pct / 100.0) * 10.0, 1)
+
+    return (earned_out_of_10, 10)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -293,21 +274,21 @@ def calculate_final_grade(cv_frame_logs: list, audio_events: list,
             'final_score': 64.8
         }
     """
-    # ── CV Stream ──
+    # -- CV Stream --
     cv_earned, cv_max = calculate_cv_points(cv_frame_logs)
     cv_pct = (cv_earned / cv_max * 100) if cv_max > 0 else 0.0
 
     # Determine how many 1-minute buckets the session spans (from CV frames)
     cv_num_buckets = math.ceil(len(cv_frame_logs) / 60) if cv_frame_logs else 0
 
-    # ── Audio Stream ──
+    # -- Audio Stream --
     # Pass the CV bucket count so audio uses the SAME session length
     audio_earned, audio_max = calculate_audio_points(
         audio_events, subject_text, session_buckets=cv_num_buckets
     )
     audio_pct = (audio_earned / audio_max * 100) if audio_max > 0 else 0.0
 
-    # ── Weighted Blend ──
+    # -- Weighted Blend --
     # If a stream has zero data (max == 0), that stream's weight shifts
     # entirely to the other stream so we don't penalize missing hardware.
     if cv_max == 0 and audio_max == 0:
@@ -348,7 +329,7 @@ if __name__ == '__main__':
     print("  DOUBLE-GATED TIME-WINDOW AGGREGATION — SELF-TEST")
     print("=" * 65)
 
-    # ── Simulated 5-minute session for student "Sam" ──
+    # -- Simulated 5-minute session for student "Sam" --
     subject = (
         "Newton's laws of motion. An object at rest stays at rest unless "
         "acted on by an external force. F equals m times a. Gravity pulls "
@@ -385,27 +366,27 @@ if __name__ == '__main__':
          'spoken_text': 'Newton said an object at rest stays at rest'},
     ]
 
-    print(f"\n📚 Subject: \"{subject[:60]}...\"")
-    print(f"📷 CV Frames: {len(cv_logs)} (= {len(cv_logs)//60} minutes)")
-    print(f"🎤 Audio Events: {len(audio)}")
+    print(f"\n[Subject] Subject: \"{subject[:60]}...\"")
+    print(f"[CV] CV Frames: {len(cv_logs)} (= {len(cv_logs)//60} minutes)")
+    print(f"[Audio] Audio Events: {len(audio)}")
 
-    # ── Run the relevance gateway on each audio event for visibility ──
-    print("\n── Audio Relevance Gateway Results ──")
+    # -- Run the relevance gateway on each audio event for visibility --
+    print("\n-- Audio Relevance Gateway Results --")
     for evt in audio:
         relevant = check_audio_relevance(evt['spoken_text'], subject)
         reasoning = evt['is_reasoning']
-        gate = "✅ PASS" if (reasoning and relevant) else "❌ FAIL"
+        gate = "PASS" if (reasoning and relevant) else "FAIL"
         print(f"  [{gate}] t={evt['timestamp']:>3}s | "
               f"reasoning={reasoning} | relevant={relevant} | "
               f"\"{evt['spoken_text'][:50]}\"")
 
-    # ── Calculate final grade ──
+    # -- Calculate final grade --
     result = calculate_final_grade(cv_logs, audio, subject)
 
-    print("\n── Score Breakdown ──")
-    print(f"  📷 CV:    {result['cv_earned']}/{result['cv_max']} "
+    print("\n-- Score Breakdown --")
+    print(f"  [CV] CV:    {result['cv_earned']}/{result['cv_max']} "
           f"= {result['cv_percentage']}%  (weight: {result['cv_weight']})")
-    print(f"  🎤 Audio: {result['audio_earned']}/{result['audio_max']} "
+    print(f"  [Audio] Audio: {result['audio_earned']}/{result['audio_max']} "
           f"= {result['audio_percentage']}%  (weight: {result['audio_weight']})")
-    print(f"\n  🎓 FINAL ENGAGEMENT SCORE: {result['final_score']}/100")
+    print(f"\n  [FINAL] FINAL ENGAGEMENT SCORE: {result['final_score']}/100")
     print("=" * 65)

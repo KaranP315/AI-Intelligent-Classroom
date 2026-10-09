@@ -1,54 +1,167 @@
-## Improving Classroom Dialogue Act Recognition from Limited Labeled Data with Self-Supervised Contrastive Learning Classifiers
-### Authors
-Vikram Kumaran, Jonathan Rowe, Bradford Mott, Snigdha Chaturvedi and James Lester
+# Multimodal Real-Time Classroom Engagement and Attentiveness Monitoring System
 
-### Abstract
-Recognizing classroom dialogue acts has significant promise for yielding insight into teaching, student learning, and classroom dynamics. However, obtaining K-12 classroom dialogue data with labels is a significant challenge, and therefore, developing data-efficient methods for classroom dialogue act recognition is essential. This work addresses the challenge of classroom dialogue act recognition from limited labeled data using a contrastive learning-based selfsupervised approach (SSCon). SSCon uses two independent models that iteratively improve
-each other's performance by increasing the accuracy of dialogue act recognition and minimizing the embedding distance between the same dialogue acts. We evaluate the approach on three complementary dialogue act recognition datasets: the TalkMoves dataset (annotated K-12 mathematics lesson transcripts), the DailyDialog dataset (multi-turn daily conversation dialogues), and the Dialogue State Tracking Challenge 2 (DSTC2) dataset (restaurant reservation dialogues). Results indicate that our selfsupervised contrastive learning-based model outperforms competitive baseline models when trained with limited examples per dialogue act. Furthermore, SSCon outperforms other fewshot models that require considerably more labeled data. 
+## Overview
 
-This project is an implementation of the approach.
+This repository provides an end-to-end, multimodal artificial intelligence framework designed to monitor and evaluate student attentiveness and cognitive engagement during live classroom lectures. 
 
-### Model
-![SSCON Architecture](Model.png)
+The system fuses two asynchronous streams in real time:
+1. **Computer Vision Stream (Physical Attentiveness - 60% Weight)**: Tracks physical postures, eye/head orientation, active note-taking, drinking, and device distractions using YOLOv8, MediaPipe Pose Landmarkers, and 128-dimensional facial recognition.
+2. **Audio and NLP Stream (Cognitive Participation - 40% Weight)**: Captures student speech, performs automatic speech recognition (ASR) with Whisper, classifies pedagogical dialogue acts using the SSCon framework (DialoGPT + Sentence-BERT + Bi-Encoder + XGBoost), and verifies semantic relevance against lecture material via an embedding-based Relevance Gateway.
 
+---
 
-### Installation
-Python 3.6 or later is needed to run the scripts. The following Python packages are also needed:
-* numpy==1.23.4
-* pandas==1.5.0
-* pytorch_lightning==2.0.2
-* scikit_learn==1.2.2
-* torch==1.12.1
-* tqdm==4.64.1
-* xgboost==1.7.5
+## System Architecture
 
+![System Architecture Overview](docs/images/system_architecture.png)
 
-## Usage
-```python main.py```
+```
++-----------------------------------------------------------------------------+
+|                               session_runner.py                             |
+|               (Asynchronous Multi-Threaded Central Coordinator)             |
++------------------------------------+----------------------------------------+
+                                     |
+         +---------------------------+---------------------------+
+         |                                                       |
+         v                                                       v
++---------------------------------+     +-------------------------------------+
+|    Computer Vision Pipeline     |     |        Audio & NLP Pipeline         |
+|                                 |     |                                     |
+|  * YOLOv8-nano (Person/Object)  |     |  * Noise Filtering & VAD            |
+|  * Face Recognition (128D dlib) |     |  * OpenAI Whisper ASR               |
+|  * MediaPipe 3D Pose Landmarks  |     |  * SSCon Dialogue Act Classifier    |
+|  * Geometric Pose Classifier    |     |  * Semantic Relevance Gateway       |
+|    (listen, write, drink, trance|     |    (Sentence-BERT Cosine Sim)       |
++----------------+----------------+     +------------------+------------------+
+                 |                                         |
+                 v                                         v
+         attentiveness_log.csv                     sscon_output.json
+                 |                                         |
+                 +--------------------+--------------------+
+                                      |
+                                      v
+                      +-------------------------------+
+                      |   Double-Gated Fusion Engine  |
+                      |                               |
+                      |  * CV Weight: 60%             |
+                      |  * Audio Weight: 40%          |
+                      |  * +4 On-Topic / -2 Off-Topic |
+                      |  * Behavioral Feedback Synth  |
+                      +---------------+---------------+
+                                      |
+                                      v
+                      Final Student Attentiveness Report
+```
 
-This script accepts no command-line arguments. It uses hardcoded data paths to load pickled pandas DataFrames representing the training, validation, and test datasets.
+---
 
-## Inputs
-The script takes as input the following data:
+## Pipeline Components
 
-* __unlabeled_train_df__: An unlabeled training dataset. Pandas dataframe with just the featureCol.
-* __labeled_train_df__: A labeled training dataset. Pandas dataframe with two columns. The featureCol and labelCol.
-* __val_df__: A validation dataset. Pandas dataframe with two columns. The featureCol and labelCol.
-* __test_df__: A test dataset. Pandas dataframe with two columns. The featureCol and labelCol.
+### 1. Computer Vision Pipeline
 
-The data should be in pickled Pandas DataFrame format. Each DataFrame should contain a columnfor features and a column for labels (in the case of labeled data).
+![YOLOv8 and MediaPipe Pose Classification](docs/images/cv_pipeline.png)
 
-## Outputs
-The script outputs the performance metrics of the trained SSCon on the test dataset.
+* **YOLOv8-Nano**: Detects the student bounding box and identifies classroom distractions, including mobile phones and drink containers.
+* **Face Recognition**: Matches the detected student against pre-registered images in `face_data/` using deep 128-dimensional facial encodings with temporal identity persistence.
+* **MediaPipe Pose Landmarker**: Tracks 33 body keypoints in real time to calculate geometric angles (ear-nose ratio, shoulder-nose drop) and categorize physical state:
+  * `listen`: Focused gaze directed toward the instructor/screen (4 points per window).
+  * `write`: Active note-taking indicated by downward head pitch and pen interaction (5 points per window).
+  * `drink`: Mild physical distraction (1 point per window).
+  * `trance`: Passive gaze aversion or head rested on desk (0 points per window).
 
-## Code Structure
-The code first sets up the environment, then loads the data. It next performs Semi-Supervised Contrastive Learning with the function SSCon_run. After this, it prints the performance of the XGBoost classifier on the test data.
+### 2. Audio & NLP Pipeline
 
-## Additional Information
-The SSCon_run function requires additional parameters such as biencoder_path, biencoder_epoch, iteration_cnt, and others. Make sure these parameters are correctly set according to your application. The XGBoost classifier model is also loaded from a pre-defined path, ensure the model exists at the mentioned path.
+* **Speech-to-Text**: Employs OpenAI Whisper (`small.en`) streaming raw audio directly from memory. Primed with an `initial_prompt` containing domain vocabulary from `subject.txt` to eliminate speech recognition hallucinations.
+* **SSCon Dialogue Act Classifier**:
+  * **DialoGPT-medium**: Encodes multi-turn conversational context (1024 dimensions).
+  * **Sentence-BERT (`all-MiniLM-L6-v2`)**: Encodes the current utterance (384 dimensions).
+  * **Bi-Encoder Neural Network**: Projects concatenated features into a unified 384-dimensional latent embedding.
+  * **XGBoost**: Predicts the pedagogical dialogue act (*Relating to another student*, *Asking for more information*, *Making a claim*, *Providing evidence*).
+* **Semantic Relevance Gateway**: Evaluates spoken statements against the lecture reference text in `subject.txt` using Sentence-BERT embeddings. Statements achieving a cosine similarity above threshold are classified as **On-Topic**; conversational noise and unrelated chatter are categorized as **Off-Topic**.
+
+### 3. Double-Gated Scoring Formula
+
+* **Utterance-Level Audio Scoring**:
+  $$\text{Net Points} = (\text{On-Topic Utterances} \times 4) - (\text{Off-Topic Utterances} \times 2)$$
+  $$\text{Dialogue Score (\%)} = \frac{\max(0, \text{Net Points})}{\text{Total Utterances} \times 4} \times 100$$
+* **Multimodal Grade Fusion**:
+  $$\text{Final Engagement Score} = (\text{CV Attentiveness \%} \times 0.60) + (\text{Dialogue Score \%} \times 0.40)$$
+* **Automated Teacher Feedback**: Synthesizes student behavioral profiles (*Strong Analytical Skills*, *Highly Inquisitive*, *Passive Participant*, *Distracted Speaker*, *Silent Observer*).
+
+---
+
+## Installation
+
+### Prerequisites
+* Python 3.10 to 3.13
+* Web camera and functional microphone
+
+### Setup Environment
+```bash
+git clone https://github.com/your-username/AI-EdTech-Project.git
+cd AI-EdTech-Project
+
+# Create and activate virtual environment
+python -m venv venv
+# On Windows:
+.\venv\Scripts\activate
+# On Linux/macOS:
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+---
+
+## How to Run
+
+### Step 1: Add Student Photos
+Place clear, front-facing photos of registered students in the `face_data/` directory. Name each file after the student:
+```
+face_data/
+  ├── Karan.jpg
+  └── Siddharth.png
+```
+
+### Step 2: Subject Material Setup
+The repository includes a reference lecture in `subject.txt` covering **Gravity and Universal Gravitation**. 
+
+If you wish to test with a different topic (e.g. History, Mathematics, Chemistry), simply replace the text in `subject.txt` with your lecture summary.
+
+### Step 3: Start the Live Session
+```bash
+python session_runner.py
+```
+
+1. The script will initialize ML models into memory and launch the video and microphone capture loops.
+2. When `SESSION IS LIVE  Camera + Microphone active!` appears, the webcam feed will open with live bounding boxes and posture labels.
+3. To end the session and generate the final diagnostic report, press **ESC** in the camera window or press **Ctrl+C** in the terminal.
+
+---
+
+## Demonstration Test Scripts
+
+You can test both ends of the scoring spectrum using the pre-loaded `subject.txt` (Gravity lesson):
+
+### Test Scenario A: Attentive Student (Target Score: 90 - 100 / 100)
+1. **Camera**: Face the camera upright (`listen`) or look down as if writing notes (`write`).
+2. **Microphone**: Read the following lines with a brief 2-second pause between them:
+   * **Line 1**: *"Objects with greater mass have a much stronger gravitational pull on other objects."*
+   * **Line 2**: *"If the distance between two planets increases, the gravitational attraction between them becomes much weaker."*
+   * **Line 3**: *"Earth's gravity pulls all objects toward its center, which is what keeps us on the ground."*
+
+### Test Scenario B: Inattentive / Distracted Student (Target Score: 0 - 20 / 100)
+1. **Camera**: Turn your head away from the screen or rest your head on your hand (`trance`), or hold a bottle/cup (`drink`).
+2. **Microphone**: Speak off-topic lines:
+   * **Line 1**: *"I am ordering a large pepperoni pizza and burger for lunch."*
+   * **Line 2**: *"Let us go play video games and watch a movie after this class."*
+   * **Line 3**: *(Remain completely silent for the remainder of the session)*
+
+---
 
 ## Citation
-```
+
+```bibtex
 @inproceedings{Kumaran-etal-2023-sscon,
     title = "Improving Classroom Dialogue Act Recognition from Limited Labeled Data with Self-Supervised Contrastive Learning Classifiers",
     author = "Kumaran, Vikram and

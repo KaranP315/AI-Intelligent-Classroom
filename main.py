@@ -84,7 +84,7 @@ def main():
     xgb_clf = XGBClassifier(**params)
     xgb_clf.load_model("trained_models/xgboost_classifier.json")
 
-    bimodel = torch.load("trained_models/bimodel.pt", weights_only=False).to(device)
+    bimodel = torch.load("trained_models/bimodel.pt", map_location=device, weights_only=False).to(device)
     bimodel.eval()
 
     tst = torch.tensor(np.ascontiguousarray(np.vstack(test_df[featureCol].values).astype(np.float32))).to(device)
